@@ -90,8 +90,8 @@
   const AUDIO_UUID   = '6e400004-b5a3-f393-e0a9-e50e24dcca9e';
   const STATUS_UUID  = '6e400005-b5a3-f393-e0a9-e50e24dcca9e';
 
-  const CMD = { SET_TIME: 0x01, START: 0x02, STOP: 0x03, RESET: 0x04 };
-  const PKT = { IMU: 0x01, AUDIO: 0x02, IMU2: 0x03 };
+  const CMD = { SET_TIME: 0x01, START: 0x02, STOP: 0x03, RESET: 0x04, PING: 0x05 };
+  const PKT = { IMU: 0x01, AUDIO: 0x02, IMU2: 0x03, PROBE: 0xFE };
 
   let device, server, service, cmdChar, imuChar, audioChar, statusChar;
   let baseEpochMs = null; // device sync reference
@@ -105,6 +105,7 @@
   let devImuDrops = 0, devAudioDrops = 0;
   let imuGaps = 0, audioGaps = 0;
   let lastImuSeq = null, lastAudioSeq = null;
+  let imuProbeOk = false, audioProbeOk = false;
 
   const $ = id => document.getElementById(id);
   const logEl = $('log');
@@ -112,6 +113,7 @@
     const t = new Date().toLocaleTimeString();
     logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent.slice(0, 8000);
   }
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   function setStatus(text, cls='') {
     const el = $('status'); el.textContent = text; el.className = 'pill ' + cls;
   }
@@ -252,6 +254,12 @@
   function onImuNotify(ev) {
     const v = ev.target.value;
     const dv = new DataView(v.buffer, v.byteOffset, v.byteLength);
+    if (dv.byteLength < 1) return;
+    if (dv.getUint8(0) === PKT.PROBE) {
+      if (!imuProbeOk) log('IMU stream probe received');
+      imuProbeOk = true;
+      return;
+    }
     if (dv.byteLength < 12) return;
     const type = dv.getUint8(0);
     let lastT = '-';
@@ -265,6 +273,12 @@
   function onAudioNotify(ev) {
     const v = ev.target.value;
     const dv = new DataView(v.buffer, v.byteOffset, v.byteLength);
+    if (dv.byteLength < 1) return;
+    if (dv.getUint8(0) === PKT.PROBE) {
+      if (!audioProbeOk) log('Audio stream probe received');
+      audioProbeOk = true;
+      return;
+    }
     if (dv.byteLength < 17) return;
     if (dv.getUint8(0) !== PKT.AUDIO) return;
 
@@ -325,9 +339,39 @@
       audioChar = await service.getCharacteristic(AUDIO_UUID);
       statusChar = await service.getCharacteristic(STATUS_UUID);
 
-      await imuChar.startNotifications(); imuChar.addEventListener('characteristicvaluechanged', onImuNotify);
-      await audioChar.startNotifications(); audioChar.addEventListener('characteristicvaluechanged', onAudioNotify);
-      try { await statusChar.startNotifications(); statusChar.addEventListener('characteristicvaluechanged', onStatusNotify); } catch(e){}
+      // Android/Web Bluetooth sometimes drops CCCD writes made immediately
+      // after connecting. Give the link time to settle, subscribe status first,
+      // then verify both stream subscriptions with device probe packets.
+      await sleep(500);
+
+      imuChar.addEventListener('characteristicvaluechanged', onImuNotify);
+      audioChar.addEventListener('characteristicvaluechanged', onAudioNotify);
+      statusChar.addEventListener('characteristicvaluechanged', onStatusNotify);
+
+      await statusChar.startNotifications(); log('Status notifications enabled');
+      await imuChar.startNotifications();   log('IMU notifications enabled');
+      await audioChar.startNotifications(); log('Audio notifications enabled');
+
+      imuProbeOk = false; audioProbeOk = false;
+      await sendCmd(CMD.PING);
+      await sleep(600);
+
+      if (!imuProbeOk || !audioProbeOk) {
+        log('Stream probe incomplete; retrying IMU/audio subscriptions...');
+        try { await imuChar.stopNotifications(); } catch(e){}
+        try { await audioChar.stopNotifications(); } catch(e){}
+        await sleep(300);
+        await imuChar.startNotifications();
+        await audioChar.startNotifications();
+        imuProbeOk = false; audioProbeOk = false;
+        await sendCmd(CMD.PING);
+        await sleep(600);
+      }
+
+      log(`Stream probe: IMU=${imuProbeOk ? 'OK' : 'MISSING'}, Audio=${audioProbeOk ? 'OK' : 'MISSING'}`);
+      if (!imuProbeOk || !audioProbeOk) {
+        log('WARNING: a stream did not confirm subscription; data may not arrive.');
+      }
 
       await sendTimeSync();
       setStatus('Connected', 'ok');
