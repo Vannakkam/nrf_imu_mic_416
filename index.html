@@ -74,6 +74,7 @@
           <span>IMU write fails (device)</span><div id="stIw">0</div>
           <span>Audio write fails (device)</span><div id="stAw">0</div>
           <span>IMU skipped / stall loss</span><div id="stImuLoss">0</div>
+          <span>Sensor FIFO overruns / full</span><div id="stFifo">0 / 0</div>
         </div>
       </div>
     </div>
@@ -107,6 +108,7 @@
   // Loss tracking
   let devImuDrops = 0, devAudioDrops = 0;
   let devIw = 0, devAw = 0, devImuSkipped = 0, devImuStall = 0;
+  let devFifoOverruns = 0, devFifoFull = 0;
   let imuGaps = 0, audioGaps = 0;
   let lastImuSeq = null, lastAudioSeq = null;
   let imuProbeOk = false, audioProbeOk = false;
@@ -133,6 +135,7 @@
     $('stIw').textContent = devIw;
     $('stAw').textContent = devAw;
     $('stImuLoss').textContent = devImuSkipped + devImuStall;
+    $('stFifo').textContent = devFifoOverruns + ' / ' + devFifoFull;
     if (lastImuT !== undefined) $('stImuT').textContent = lastImuT;
     if (lastAudT !== undefined) $('stAudT').textContent = lastAudT;
   }
@@ -324,7 +327,9 @@
       ['iw', v => devIw = v],
       ['aw', v => devAw = v],
       ['skip', v => devImuSkipped = v],
-      ['stall', v => devImuStall = v]
+      ['stall', v => devImuStall = v],
+      ['fo', v => devFifoOverruns = v],
+      ['fu', v => devFifoFull = v]
     ]) {
       const v = grab(key);
       if (v !== null) { set(v); changed = true; }
@@ -430,7 +435,8 @@
     imuRecords = []; audioPackets = [];
     imuPktCount = 0; audioPktCount = 0; audioSampleCount = 0;
     devImuDrops = 0; devAudioDrops = 0; devIw = 0; devAw = 0;
-    devImuSkipped = 0; devImuStall = 0; imuGaps = 0; audioGaps = 0;
+    devImuSkipped = 0; devImuStall = 0; devFifoOverruns = 0; devFifoFull = 0;
+    imuGaps = 0; audioGaps = 0;
     lastImuSeq = null; lastAudioSeq = null; baseEpochMs = null;
     updateStats('-', '-');
     try { await sendCmd(CMD.RESET); } catch(e){}
