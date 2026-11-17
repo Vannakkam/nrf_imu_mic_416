@@ -48,7 +48,7 @@
           <button id="btnStop" disabled>Stop Recording</button>
         </div>
         <button id="btnReset">7. Reset Data</button>
-        <small class="note">On connect, host system time is sent to the device for timestamp alignment. Device-reported drop counts appear in the log on Stop.</small>
+        <small class="note">Host system time is sent to the device on connect and again on every Start, so absolute timestamps survive Reset/Stop/Start. Device-reported loss counters appear in the log via STAT and on Stop.</small>
       </div>
 
       <div class="card">
@@ -71,6 +71,9 @@
           <span>Audio drops (device)</span><div id="stAudDrop">0</div>
           <span>IMU packet gaps</span><div id="stImuGap">0</div>
           <span>Audio packet gaps</span><div id="stAudGap">0</div>
+          <span>IMU write fails (device)</span><div id="stIw">0</div>
+          <span>Audio write fails (device)</span><div id="stAw">0</div>
+          <span>IMU skipped / stall loss</span><div id="stImuLoss">0</div>
         </div>
       </div>
     </div>
@@ -103,6 +106,7 @@
 
   // Loss tracking
   let devImuDrops = 0, devAudioDrops = 0;
+  let devIw = 0, devAw = 0, devImuSkipped = 0, devImuStall = 0;
   let imuGaps = 0, audioGaps = 0;
   let lastImuSeq = null, lastAudioSeq = null;
   let imuProbeOk = false, audioProbeOk = false;
@@ -126,6 +130,9 @@
     $('stAudDrop').textContent = devAudioDrops;
     $('stImuGap').textContent = imuGaps;
     $('stAudGap').textContent = audioGaps;
+    $('stIw').textContent = devIw;
+    $('stAw').textContent = devAw;
+    $('stImuLoss').textContent = devImuSkipped + devImuStall;
     if (lastImuT !== undefined) $('stImuT').textContent = lastImuT;
     if (lastAudT !== undefined) $('stAudT').textContent = lastAudT;
   }
@@ -152,7 +159,9 @@
     return seq;
   }
 
-  // ---------- IMA ADPCM decode (decoder reset per packet, matching encoder) ----------
+  // ---------- IMA ADPCM decode ----------
+  // Each packet carries the encoder state for its first sample in the header,
+  // so packets are independent but the audio waveform stays continuous.
   const imaStepTable = [
     7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,
     143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,
@@ -161,11 +170,12 @@
   ];
   const imaIndexTable = [-1,-1,-1,-1,2,4,6,8];
   function decodeImaAdpcm(bytes, sampleCount, initPredictor=0, initStep=0) {
-    let predictor = initPredictor, stepIndex = initStep;
+    let predictor = initPredictor | 0;
+    let stepIndex = Math.max(0, Math.min(88, initStep | 0));
     const out = new Int16Array(sampleCount);
     let nibbleIndex = 0;
     for (let i = 0; i < sampleCount; i++) {
-      const byte = bytes[nibbleIndex >> 1];
+      const byte = bytes[nibbleIndex >> 1] || 0;
       const code = (nibbleIndex & 1) ? (byte >> 4) & 0xF : byte & 0xF;
       nibbleIndex++;
       let step = imaStepTable[stepIndex];
@@ -302,12 +312,24 @@
   function onStatusNotify(ev) {
     const txt = new TextDecoder().decode(ev.target.value);
     log('Device: ' + txt);
-    const m = txt.match(/imu_drop=(\d+)\s+aud_drop=(\d+)/);
-    if (m) {
-      devImuDrops = Number(m[1]);
-      devAudioDrops = Number(m[2]);
-      updateStats();
+
+    const grab = key => {
+      const m = txt.match(new RegExp('(?:^|\\s)' + key + '=(\\d+)'));
+      return m ? Number(m[1]) : null;
+    };
+    let changed = false;
+    for (const [key, set] of [
+      ['id', v => devImuDrops = v],
+      ['ad', v => devAudioDrops = v],
+      ['iw', v => devIw = v],
+      ['aw', v => devAw = v],
+      ['skip', v => devImuSkipped = v],
+      ['stall', v => devImuStall = v]
+    ]) {
+      const v = grab(key);
+      if (v !== null) { set(v); changed = true; }
     }
+    if (changed) updateStats();
   }
 
   async function sendTimeSync() {
@@ -395,12 +417,20 @@
 
   $('btnPair').onclick = connect;
   $('btnDisconnect').onclick = disconnect;
-  $('btnStart').onclick = async () => { await sendCmd(CMD.START); setUi(true, true); log('Recording started'); };
+  $('btnStart').onclick = async () => {
+    // Re-sync on every start: RESET clears device time, and this also fixes
+    // captures where absolute timestamps were missing after a reset cycle.
+    await sendTimeSync();
+    await sendCmd(CMD.START);
+    setUi(true, true);
+    log('Recording started');
+  };
   $('btnStop').onclick = async () => { await sendCmd(CMD.STOP); setUi(true, false); log('Recording stopped'); };
   $('btnReset').onclick = async () => {
     imuRecords = []; audioPackets = [];
     imuPktCount = 0; audioPktCount = 0; audioSampleCount = 0;
-    devImuDrops = 0; devAudioDrops = 0; imuGaps = 0; audioGaps = 0;
+    devImuDrops = 0; devAudioDrops = 0; devIw = 0; devAw = 0;
+    devImuSkipped = 0; devImuStall = 0; imuGaps = 0; audioGaps = 0;
     lastImuSeq = null; lastAudioSeq = null; baseEpochMs = null;
     updateStats('-', '-');
     try { await sendCmd(CMD.RESET); } catch(e){}
