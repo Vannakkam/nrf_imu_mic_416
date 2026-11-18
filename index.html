@@ -30,7 +30,7 @@
 <body>
   <div class="wrap">
     <h1>Seeed nRF52840 Sense &mdash; BLE Recorder</h1>
-    <p class="sub">Web Bluetooth recorder: IMU at 416&nbsp;Hz (24 samples / packet, 12-bit packed) and microphone audio at 8&nbsp;kHz (IMA ADPCM). Firmware/client v5.1 fixes IMU byte order, makes FIFO overruns visible, and uses a jitter-free audio clock with click-free gap handling.</p>
+    <p class="sub">Web Bluetooth recorder: IMU at 416&nbsp;Hz (24 samples / packet, 12-bit packed) and microphone audio at 8&nbsp;kHz (IMA ADPCM). Firmware/client v5.2 fixes IMU byte order, makes FIFO overruns visible, and uses a jitter-free audio clock with click-free ADPCM and gap handling.</p>
 
     <div class="grid">
       <div class="card">
@@ -187,9 +187,12 @@
     7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767
   ];
   const imaIndexTable = [-1,-1,-1,-1,2,4,6,8];
+  // Must match ADPCM_MAX_STEP_INDEX in the firmware. The full IMA range
+  // (88) allows +/-4095 jumps on quiet samples and causes audible clicks.
+  const ADPCM_MAX_STEP_INDEX = 60;
   function decodeImaAdpcm(bytes, sampleCount, initPredictor=0, initStep=0) {
     let predictor = initPredictor | 0;
-    let stepIndex = Math.max(0, Math.min(88, initStep | 0));
+    let stepIndex = Math.max(0, Math.min(ADPCM_MAX_STEP_INDEX, initStep | 0));
     const out = new Int16Array(sampleCount);
     let nibbleIndex = 0;
     for (let i = 0; i < sampleCount; i++) {
@@ -205,7 +208,8 @@
       if (predictor > 32767) predictor = 32767;
       if (predictor < -32768) predictor = -32768;
       stepIndex += imaIndexTable[code & 7];
-      if (stepIndex < 0) stepIndex = 0; if (stepIndex > 88) stepIndex = 88;
+      if (stepIndex < 0) stepIndex = 0;
+      if (stepIndex > ADPCM_MAX_STEP_INDEX) stepIndex = ADPCM_MAX_STEP_INDEX;
       out[i] = predictor;
     }
     return out;
